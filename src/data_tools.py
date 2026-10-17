@@ -174,6 +174,11 @@ def _extract_news_item(item: dict) -> dict:
         or content.get("displayTime")
         or content.get("providerPublishTime")
     )
+    if isinstance(published_at, (int, float)):
+        published_at = datetime.fromtimestamp(
+            published_at,
+            tz=timezone.utc,
+        ).isoformat()
 
     url = None
     canonical = content.get("canonicalUrl")
@@ -213,12 +218,37 @@ def get_news_data(
     symbol = normalize_ticker(ticker)
     company = yf.Ticker(symbol)
 
+    ticker_error = None
     try:
         raw_news = company.news or []
     except Exception as exc:
+        ticker_error = exc
+        raw_news = []
+
+    # Ticker.news is intermittently unavailable. Search uses Yahoo's same
+    # public feed and gives the demo a second retrieval path.
+    if not raw_news and hasattr(yf, "Search"):
+        try:
+            search = yf.Search(
+                f"{symbol} stock",
+                news_count=limit,
+                enable_fuzzy_query=False,
+            )
+            raw_news = search.news or []
+        except Exception as exc:
+            if ticker_error is not None:
+                raise RuntimeError(
+                    f"Unable to retrieve news for '{symbol}' using ticker "
+                    f"or search endpoints: {ticker_error}; {exc}"
+                ) from exc
+            raise RuntimeError(
+                f"Unable to retrieve news for '{symbol}': {exc}"
+            ) from exc
+
+    if not raw_news and ticker_error is not None:
         raise RuntimeError(
-            f"Unable to retrieve news for '{symbol}': {exc}"
-        ) from exc
+            f"Unable to retrieve news for '{symbol}': {ticker_error}"
+        ) from ticker_error
 
     normalized = []
     seen = set()
